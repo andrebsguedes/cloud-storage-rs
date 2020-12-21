@@ -543,6 +543,59 @@ impl Object {
         Ok(SizedByteStream::new(bytes, size))
     }
 
+    /// Download a byte range of the object with the specified name in the specified bucket, without
+    /// allocating the whole range into a vector.
+    /// ### Example
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use cloud_storage::Object;
+    /// use futures::StreamExt;
+    /// use std::fs::File;
+    /// use std::io::{BufWriter, Write};
+    ///
+    /// let mut stream = Object::download_range_streamed("my_bucket", "path/to/my/file.png", 0, 1024).await?;
+    /// let mut file = BufWriter::new(File::create("file.png").unwrap());
+    /// while let Some(byte) = stream.next().await {
+    ///     file.write_all(&[byte.unwrap()]).unwrap();
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn download_range_streamed(
+        bucket: &str,
+        file_name: &str,
+        start: usize,
+        end: impl Into<Option<usize>>
+    ) -> crate::Result<impl Stream<Item = crate::Result<u8>> + Unpin> {
+        use futures::{StreamExt, TryStreamExt};
+        let url = format!(
+            "{}/b/{}/o/{}?alt=media",
+            crate::BASE_URL,
+            percent_encode(bucket),
+            percent_encode(file_name),
+        );
+
+        let mut headers = crate::get_headers().await?;
+
+        headers.insert(
+            reqwest::header::RANGE,
+            format!("bytes={}-{}", start, end.into().map(|n| n.to_string()).unwrap_or_else(|| "".into())).parse().unwrap()
+        );
+
+        let res = crate::CLIENT
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await?;
+        let size = res.content_length();
+        let bytes = res
+            .bytes_stream()
+            .map(|chunk| chunk.map(|c| futures::stream::iter(c.into_iter().map(Ok))))
+            .try_flatten();
+        Ok(SizedByteStream::new(bytes, size))
+    }
+
     /// Obtains a single object with the specified name in the specified bucket.
     /// ### Example
     /// ```no_run
